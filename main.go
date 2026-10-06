@@ -153,7 +153,14 @@ func discover(reposDir, worktreesDir string) []worktree {
 	if err != nil {
 		return nil
 	}
-	prefix := worktreesDir + string(os.PathSeparator)
+	root, err := filepath.EvalSymlinks(worktreesDir)
+	if err != nil {
+		root, err = filepath.Abs(worktreesDir)
+		if err != nil {
+			return nil
+		}
+	}
+	prefix := root + string(os.PathSeparator)
 	for _, e := range entries {
 		if !e.IsDir() || !validName(e.Name()) {
 			continue
