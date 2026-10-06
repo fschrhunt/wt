@@ -1,0 +1,5 @@
+{
+  "repos": "~/space/code/repos",
+  "worktrees": "~/space/code/worktrees",
+  "pattern": "{task}-{repo}"
+}
