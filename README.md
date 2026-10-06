@@ -33,3 +33,15 @@ Only `{task}` and `{repo}` placeholders. Names stay flat; collisions get `-1`, `
 ```bash
 go build -o wt .
 ```
+
+## Contributing
+
+Use Go 1.26 or newer and run `./x check` before proposing a change. `./x` defaults to
+this non-mutating check: Go formatting, vet, tests and a build to `/dev/null`. CI
+runs the same command on pull requests and pushes to main. There
+are currently no Go tests; add focused tests when changing behavior.
+
+`./x --help` lists targets. `./x fmt --check` checks without writing; `./x fmt`
+formats sources. `./x test` and `./x build` forward Go arguments, for example
+`./x build -o /tmp/wt .`. Update relevant docs when behavior changes; this repository
+has no changelog convention. Use temporary repos and `WT_CONFIG` for manual checks.
