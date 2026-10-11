@@ -3,10 +3,16 @@
 Dumb git worktree helper. Creates detached worktrees, lists them, removes them.
 
 ```bash
-wt new <task>          # run from inside a repo → worktrees/<task>-<repo> at HEAD, detached
+wt new [--no-fetch] [--base <ref>] <task>  # run from inside a repo → worktrees/<task>-<repo>, detached at a fresh base
 wt list
 wt remove <name|path>  # always forces
 ```
+
+`wt new` fetches `origin` first, then detaches at `origin/HEAD`, falling back
+through `origin/main`, `origin/master`, and local `HEAD`. The base checkout in
+`repos/` never moves. A failed fetch (offline, no remote) falls back to local
+refs with a warning. `--no-fetch` skips the fetch, `--base <ref>` pins the ref
+and skips the fetch.
 
 Worktrees start detached, so name a branch before you push:
 
@@ -38,8 +44,8 @@ go build -o wt .
 
 Use Go 1.26 or newer and run `./x check` before proposing a change. `./x` defaults to
 this non-mutating check: Go formatting, vet, tests and a build to `/dev/null`. CI
-runs the same command on pull requests and pushes to main. There
-are currently no Go tests; add focused tests when changing behavior.
+runs the same command on pull requests and pushes to main. Add focused tests
+when changing behavior.
 
 `./x --help` lists targets. `./x fmt --check` checks without writing; `./x fmt`
 formats sources. `./x test` and `./x build` forward Go arguments, for example

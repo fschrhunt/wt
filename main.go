@@ -132,6 +132,45 @@ func applyPattern(pattern, task, repo string) string {
 	return strings.ReplaceAll(out, "{repo}", repo)
 }
 
+// defaultBaseCandidates orders the refs cmdNew tries after fetching.
+var defaultBaseCandidates = []string{"origin/HEAD", "origin/main", "origin/master", "HEAD"}
+
+// hasRemote reports whether name is a configured remote.
+func hasRemote(dir, name string) bool {
+	return exec.Command("git", "-C", dir, "remote", "get-url", name).Run() == nil
+}
+
+// fetchRemote updates remote-tracking refs. The caller falls back to local
+// refs when it fails (offline, no network), so output goes to stderr.
+func fetchRemote(dir, remote string) error {
+	cmd := exec.Command("git", "-C", dir, "fetch", remote)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	// Best effort: refresh the origin/HEAD pointer so a moved default
+	// branch does not leave new worktrees behind. Ignore failures.
+	refresh := exec.Command("git", "-C", dir, "remote", "set-head", remote, "-a")
+	refresh.Stdout = os.Stderr
+	refresh.Stderr = os.Stderr
+	_ = refresh.Run()
+	return nil
+}
+
+// resolveBase returns the first candidate that verifies in dir.
+func resolveBase(dir string, candidates []string) (string, error) {
+	for _, ref := range candidates {
+		if ref == "" {
+			continue
+		}
+		if err := exec.Command("git", "-C", dir, "rev-parse", "--verify", ref).Run(); err == nil {
+			return ref, nil
+		}
+	}
+	return "", fmt.Errorf("no usable base ref")
+}
+
 // gitTop returns the physical top-level directory of the current repository.
 func gitTop() string {
 	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
@@ -189,8 +228,13 @@ func discover(reposDir, worktreesDir string) []worktree {
 	return found
 }
 
-// cmdNew creates a detached worktree at HEAD for the given task name.
-func cmdNew(reposDir, worktreesDir, pattern, task string) {
+// cmdNew creates a detached worktree for the given task name. It fetches
+// origin first (unless skipped) and detaches at origin/HEAD, falling back
+// through origin/main, origin/master, and finally local HEAD, so worktrees
+// start from fresh upstream refs instead of a stale base checkout. The base
+// checkout itself never moves. An explicit base ref pins the worktree and
+// skips the fetch.
+func cmdNew(reposDir, worktreesDir, pattern, task, base string, noFetch bool) {
 	if !validName(task) {
 		die("invalid task name")
 	}
@@ -199,8 +243,26 @@ func cmdNew(reposDir, worktreesDir, pattern, task string) {
 	if !validName(repo) {
 		die("repository directory name is not usable")
 	}
-	if err := exec.Command("git", "-C", top, "rev-parse", "--verify", "HEAD").Run(); err != nil {
-		die("commit once before creating a worktree")
+	var baseRef string
+	if base != "" {
+		if err := exec.Command("git", "-C", top, "rev-parse", "--verify", base).Run(); err != nil {
+			die("unknown base ref: %s", base)
+		}
+		baseRef = base
+	} else {
+		if !noFetch && hasRemote(top, "origin") {
+			if err := fetchRemote(top, "origin"); err != nil {
+				fmt.Fprintln(os.Stderr, "warning: fetch failed; falling back to local refs")
+			}
+		}
+		ref, err := resolveBase(top, defaultBaseCandidates)
+		if err != nil {
+			die("commit once before creating a worktree")
+		}
+		baseRef = ref
+		if baseRef == "HEAD" {
+			fmt.Fprintln(os.Stderr, "warning: no remote-tracking base found; using local HEAD")
+		}
 	}
 	name := applyPattern(pattern, task, repo)
 	if !validName(name) {
@@ -216,12 +278,13 @@ func cmdNew(reposDir, worktreesDir, pattern, task string) {
 	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
 		die("cannot create worktrees directory")
 	}
-	cmd := exec.Command("git", "-C", top, "worktree", "add", "--detach", dest, "HEAD")
+	cmd := exec.Command("git", "-C", top, "worktree", "add", "--detach", dest, baseRef)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		die("could not create worktree")
 	}
+	fmt.Fprintf(os.Stderr, "based on %s\n", baseRef)
 	fmt.Println(dest)
 }
 
@@ -272,7 +335,7 @@ func cmdRemove(reposDir, worktreesDir, selector string) {
 func cmdHelp() {
 	fmt.Print(`wt — dumb git worktree helper
 
-  wt new <task>          Create a detached worktree at HEAD (run from inside a repo)
+  wt new [--no-fetch] [--base <ref>] <task>  Create a detached worktree at a fresh base (run from inside a repo)
   wt list                Show worktrees under the configured worktrees directory
   wt remove <name|path>  Force-remove a worktree
   wt help                Show this help
@@ -280,9 +343,38 @@ func cmdHelp() {
 Config: $WT_CONFIG, else ~/.config/wt/settings.json, else built-in defaults.
   {"repos": "~/space/code/repos", "worktrees": "~/space/code/worktrees",
    "pattern": "{task}-{repo}"}
+New worktrees fetch origin first, then detach at origin/HEAD (falling back
+through origin/main, origin/master, and local HEAD). The base checkout never
+moves; a failed fetch falls back to local refs with a warning. --no-fetch
+skips the fetch, --base pins the ref instead.
 Worktrees start detached; name a branch before you push:
   git switch -c feat/thing
 `)
+}
+
+// parseNewArgs splits leading --no-fetch/--base flags from the task name.
+func parseNewArgs(args []string) (task, base string, noFetch bool) {
+	rest := args
+	for len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
+		switch rest[0] {
+		case "--no-fetch":
+			noFetch = true
+			rest = rest[1:]
+		case "--base":
+			if len(rest) < 2 || rest[1] == "" || strings.HasPrefix(rest[1], "-") ||
+				strings.ContainsAny(rest[1], " \t\n\r") {
+				die("usage: wt new [--no-fetch] [--base <ref>] <task> (run from inside a git repo)")
+			}
+			base = rest[1]
+			rest = rest[2:]
+		default:
+			die("usage: wt new [--no-fetch] [--base <ref>] <task> (run from inside a git repo)")
+		}
+	}
+	if len(rest) != 1 {
+		die("usage: wt new [--no-fetch] [--base <ref>] <task> (run from inside a git repo)")
+	}
+	return rest[0], base, noFetch
 }
 
 func main() {
@@ -302,10 +394,8 @@ func main() {
 		}
 		cmdHelp()
 	case "new":
-		if len(args) != 1 {
-			die("usage: wt new <task> (run from inside a git repo)")
-		}
-		cmdNew(reposDir, worktreesDir, pattern, args[0])
+		task, base, noFetch := parseNewArgs(args)
+		cmdNew(reposDir, worktreesDir, pattern, task, base, noFetch)
 	case "list":
 		if len(args) != 0 {
 			die("usage: wt list")
