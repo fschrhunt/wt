@@ -3,7 +3,7 @@
 Dumb git worktree helper. Creates detached worktrees, lists them, removes them.
 
 ```bash
-wt new [--no-fetch] [--base <ref>] <task>  # run from inside a repo → worktrees/<task>-<repo>, detached at a fresh base
+wt new [--no-fetch] [--base <ref>] <agent>  # run from inside a repo → worktrees/<agent>-<repo>, detached at a fresh base
 wt list
 wt remove <name|path>  # always forces
 ```
@@ -18,7 +18,13 @@ Worktrees start detached, so name a branch before you push:
 
 ```bash
 git switch -c feat/thing
+git push -u origin feat/thing
 ```
+
+The worktree name (`claude-wt`) is only a directory label. It is not a branch
+name, so never push a branch called `claude-wt`. If one was already pushed,
+push the real branch name, then delete the old remote branch with
+`git push origin --delete claude-wt`.
 
 ## Config
 
@@ -27,12 +33,11 @@ git switch -c feat/thing
 ```json
 {
   "repos": "~/space/code/repos",
-  "worktrees": "~/space/code/worktrees",
-  "pattern": "{task}-{repo}"
+  "worktrees": "~/space/code/worktrees"
 }
 ```
 
-Only `{task}` and `{repo}` placeholders. Names stay flat; collisions get `-1`, `-2`.
+Names are `<agent>-<repo>` and stay flat; collisions get `-1`, `-2`.
 
 ## Build
 

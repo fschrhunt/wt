@@ -70,3 +70,15 @@ func TestResolveBaseErrorsWithoutMatch(t *testing.T) {
 		t.Fatal("expected error for unresolvable refs")
 	}
 }
+
+// TestNewNamesWorktreeAgentRepo pins the <agent>-<repo> naming contract.
+func TestNewNamesWorktreeAgentRepo(t *testing.T) {
+	repo := initRepo(t)
+	t.Chdir(repo)
+	worktrees := t.TempDir()
+	cmdNew(t.TempDir(), worktrees, "claude", "", true)
+	want := filepath.Join(worktrees, "claude-"+filepath.Base(repo))
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("worktree not created at %s: %v", want, err)
+	}
+}

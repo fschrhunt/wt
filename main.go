@@ -1,9 +1,9 @@
 // Command wt creates detached git worktrees, lists them, and force-removes them.
 //
-// Layout comes from a three-key JSON config (repos, worktrees, pattern) so any
-// machine can point it at its own directories. Everything else is hardcoded:
-// worktrees start detached, collisions get a -1/-2 suffix, removal always
-// forces. Run wt help for usage.
+// Directories come from a two-key JSON config (repos, worktrees) so any machine
+// can point it at its own layout. Worktrees are named <agent>-<repo>, start
+// detached, get a -1/-2 suffix on collision, and removal always forces. Run
+// wt help for usage.
 package main
 
 import (
@@ -20,7 +20,6 @@ import (
 type fileConfig struct {
 	Repos     string `json:"repos"`
 	Worktrees string `json:"worktrees"`
-	Pattern   string `json:"pattern"`
 }
 
 // worktree pairs a base repo name with one of its checkout paths.
@@ -76,15 +75,14 @@ func defaultConfigPath() string {
 	return filepath.Join(home, ".config", "wt", "settings.json")
 }
 
-// loadConfig returns the effective repos dir, worktrees dir, and name pattern.
-func loadConfig() (repos, worktrees, pattern string) {
+// loadConfig returns the effective repos dir and worktrees dir.
+func loadConfig() (repos, worktrees string) {
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		home = os.Getenv("HOME")
 	}
 	repos = filepath.Join(home, "space", "code", "repos")
 	worktrees = filepath.Join(home, "space", "code", "worktrees")
-	pattern = "{task}-{repo}"
 
 	path := os.Getenv("WT_CONFIG")
 	if path == "" {
@@ -93,7 +91,7 @@ func loadConfig() (repos, worktrees, pattern string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return repos, worktrees, pattern
+			return repos, worktrees
 		}
 		die("cannot read config: %v", err)
 	}
@@ -109,9 +107,6 @@ func loadConfig() (repos, worktrees, pattern string) {
 	if cfg.Worktrees != "" {
 		worktrees = expandTilde(cfg.Worktrees)
 	}
-	if cfg.Pattern != "" {
-		pattern = cfg.Pattern
-	}
 	for _, p := range []string{repos, worktrees} {
 		if strings.ContainsAny(p, "\n\r\t") {
 			die("config paths contain control characters")
@@ -120,16 +115,7 @@ func loadConfig() (repos, worktrees, pattern string) {
 			die("config repos and worktrees must be absolute paths")
 		}
 	}
-	if pattern == "" {
-		die("config pattern must not be empty")
-	}
-	return repos, worktrees, pattern
-}
-
-// applyPattern substitutes the {task} and {repo} placeholders.
-func applyPattern(pattern, task, repo string) string {
-	out := strings.ReplaceAll(pattern, "{task}", task)
-	return strings.ReplaceAll(out, "{repo}", repo)
+	return repos, worktrees
 }
 
 // defaultBaseCandidates orders the refs cmdNew tries after fetching.
@@ -228,15 +214,15 @@ func discover(reposDir, worktreesDir string) []worktree {
 	return found
 }
 
-// cmdNew creates a detached worktree for the given task name. It fetches
-// origin first (unless skipped) and detaches at origin/HEAD, falling back
-// through origin/main, origin/master, and finally local HEAD, so worktrees
-// start from fresh upstream refs instead of a stale base checkout. The base
-// checkout itself never moves. An explicit base ref pins the worktree and
-// skips the fetch.
-func cmdNew(reposDir, worktreesDir, pattern, task, base string, noFetch bool) {
-	if !validName(task) {
-		die("invalid task name")
+// cmdNew creates a detached worktree named <agent>-<repo> from the repository
+// in the current directory. It fetches origin first (unless skipped) and
+// detaches at origin/HEAD, falling back through origin/main, origin/master, and
+// finally local HEAD, so worktrees start from fresh upstream refs instead of a
+// stale base checkout. The base checkout itself never moves. An explicit base
+// ref pins the worktree and skips the fetch.
+func cmdNew(reposDir, worktreesDir, agent, base string, noFetch bool) {
+	if !validName(agent) {
+		die("invalid agent name")
 	}
 	top := gitTop()
 	repo := filepath.Base(top)
@@ -264,10 +250,7 @@ func cmdNew(reposDir, worktreesDir, pattern, task, base string, noFetch bool) {
 			fmt.Fprintln(os.Stderr, "warning: no remote-tracking base found; using local HEAD")
 		}
 	}
-	name := applyPattern(pattern, task, repo)
-	if !validName(name) {
-		die("pattern produced an invalid worktree name")
-	}
+	name := agent + "-" + repo
 	dest := filepath.Join(worktreesDir, name)
 	for i := 1; ; i++ {
 		if _, err := os.Lstat(dest); os.IsNotExist(err) {
@@ -335,25 +318,26 @@ func cmdRemove(reposDir, worktreesDir, selector string) {
 func cmdHelp() {
 	fmt.Print(`wt — dumb git worktree helper
 
-  wt new [--no-fetch] [--base <ref>] <task>  Create a detached worktree at a fresh base (run from inside a repo)
+  wt new [--no-fetch] [--base <ref>] <agent>  Create <agent>-<repo> detached at a fresh base (run from inside a repo)
   wt list                Show worktrees under the configured worktrees directory
   wt remove <name|path>  Force-remove a worktree
   wt help                Show this help
 
 Config: $WT_CONFIG, else ~/.config/wt/settings.json, else built-in defaults.
-  {"repos": "~/space/code/repos", "worktrees": "~/space/code/worktrees",
-   "pattern": "{task}-{repo}"}
+  {"repos": "~/space/code/repos", "worktrees": "~/space/code/worktrees"}
 New worktrees fetch origin first, then detach at origin/HEAD (falling back
 through origin/main, origin/master, and local HEAD). The base checkout never
 moves; a failed fetch falls back to local refs with a warning. --no-fetch
 skips the fetch, --base pins the ref instead.
-Worktrees start detached; name a branch before you push:
+Worktrees start detached; name a branch before you push. The worktree name is
+a directory label, not a branch name:
   git switch -c feat/thing
+  git push -u origin feat/thing
 `)
 }
 
-// parseNewArgs splits leading --no-fetch/--base flags from the task name.
-func parseNewArgs(args []string) (task, base string, noFetch bool) {
+// parseNewArgs splits leading --no-fetch/--base flags from the agent name.
+func parseNewArgs(args []string) (agent, base string, noFetch bool) {
 	rest := args
 	for len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
 		switch rest[0] {
@@ -363,16 +347,16 @@ func parseNewArgs(args []string) (task, base string, noFetch bool) {
 		case "--base":
 			if len(rest) < 2 || rest[1] == "" || strings.HasPrefix(rest[1], "-") ||
 				strings.ContainsAny(rest[1], " \t\n\r") {
-				die("usage: wt new [--no-fetch] [--base <ref>] <task> (run from inside a git repo)")
+				die("usage: wt new [--no-fetch] [--base <ref>] <agent> (run from inside a git repo)")
 			}
 			base = rest[1]
 			rest = rest[2:]
 		default:
-			die("usage: wt new [--no-fetch] [--base <ref>] <task> (run from inside a git repo)")
+			die("usage: wt new [--no-fetch] [--base <ref>] <agent> (run from inside a git repo)")
 		}
 	}
 	if len(rest) != 1 {
-		die("usage: wt new [--no-fetch] [--base <ref>] <task> (run from inside a git repo)")
+		die("usage: wt new [--no-fetch] [--base <ref>] <agent> (run from inside a git repo)")
 	}
 	return rest[0], base, noFetch
 }
@@ -381,7 +365,7 @@ func main() {
 	if _, err := exec.LookPath("git"); err != nil {
 		die("Git is required")
 	}
-	reposDir, worktreesDir, pattern := loadConfig()
+	reposDir, worktreesDir := loadConfig()
 	args := os.Args[1:]
 	name := "help"
 	if len(args) > 0 {
@@ -394,8 +378,8 @@ func main() {
 		}
 		cmdHelp()
 	case "new":
-		task, base, noFetch := parseNewArgs(args)
-		cmdNew(reposDir, worktreesDir, pattern, task, base, noFetch)
+		agent, base, noFetch := parseNewArgs(args)
+		cmdNew(reposDir, worktreesDir, agent, base, noFetch)
 	case "list":
 		if len(args) != 0 {
 			die("usage: wt list")
